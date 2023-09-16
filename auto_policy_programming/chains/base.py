@@ -1,0 +1,70 @@
+
+from abc import abstractmethod
+from ast import Dict
+from typing import Any, Dict, List, Optional, Union
+from langchain import BasePromptTemplate
+from langchain.callbacks.manager import Callbacks
+from langchain.schema.language_model import BaseLanguageModel
+from langchain.chains.base import Chain
+
+class ParsingChain(Chain):
+    prompt: BasePromptTemplate
+    llm: BaseLanguageModel
+
+    class Config:
+        extra = "forbid"
+        arbitrary_types_allowed = True
+    
+    @property
+    def input_keys(self) -> List[str]:
+        return self.prompt.input_variables
+    
+    @property
+    @abstractmethod
+    def output_keys(self) -> List[str]:
+        raise NotImplementedError()
+    
+    @abstractmethod
+    def output_parser(self, output: str) -> Dict[str, str]:
+        raise NotImplementedError()
+    
+    def input_pre_format(self, inputs: Dict) -> Dict[str, any]:
+        return inputs
+    
+    def _call(
+        self,
+        inputs: Dict[str, any],
+        run_manager,
+    ) -> Dict[str, str]:
+        prompt_value = self.prompt.format_prompt(**inputs)
+        response = self.llm.generate_prompt(
+            [prompt_value], callbacks=run_manager.get_child() if run_manager else None)
+        if run_manager:
+            run_manager.on_text("Calling llm")
+        return self.output_parser(response.generations[0][0].text)
+
+    async def _acall(
+        self,
+        inputs: Dict[str, any],
+        run_manager,
+    ) -> Dict[str, str]:
+        prompt_value = self.prompt.format_prompt(**inputs)
+        response = await self.llm.generate_prompt(
+            [prompt_value], callbacks=run_manager.get_child() if run_manager else None)
+        if run_manager:
+            await run_manager.on_text("Calling llm")
+        return self.output_parser(response.generations[0][0].text)
+    
+    def __call__(self, inputs: Union[Dict[str, Any], Any], *args, **kwargs):
+        if isinstance(inputs, dict):
+            inputs = self.input_pre_format(inputs)
+        return super().__call__(inputs, *args, **kwargs)
+    
+    def acall(self, inputs: Union[Dict[str, Any], Any], *args, **kwargs):
+        if isinstance(inputs, dict):
+            inputs = self.input_pre_format(inputs)
+        return super().__call__(inputs, *args, **kwargs)
+
+    @property
+    def _chain_type(self) -> str:
+        return super()._chain_type + "_ParsingChain"

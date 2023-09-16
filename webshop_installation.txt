@@ -1,0 +1,14 @@
+
+- use conda python=3.8.13
+- install pip first after creating new conda environment.
+- update requirements.txt with:
+    blis==0.7.9
+    numpy==1.24.2
+    PyYAML==6.0.1
+    scikit_learn==1.2.2
+    torch==2.0.1
+- If there is some issue installing spacy, take a look at https://github.com/explosion/spaCy/issues/12659
+- typing_extensions==4.4.0
+- You may want to install the requirements line-by-line.
+
+If there is core dump error. Just rerun it.
