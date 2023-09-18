@@ -1,6 +1,6 @@
 import sys
 import pytest
-from auto_policy_programming.policy.transition import Transition
+from auto_policy_programming.fsm.transition import Transition
 import logging
 
 logging.basicConfig(level=logging.DEBUG, stream=sys.stdout, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s")
