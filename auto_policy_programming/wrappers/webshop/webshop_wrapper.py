@@ -83,15 +83,37 @@ class WebAgentTextEnvTypedState(BaseWrapper):
         self.all_states_actions = {
             k: set(v['actions'].keys()) for k, v in webshop_state_description.items()
         }
+        self.cur_state_name = None
+    
+    def state_name_transition(self, action):
+        action_type = action.split("[")[0]
+        action_value = action.split("[")[1][:-1]
+        if action_type == "search":
+            return "results"
+        elif action_type == "click":
+            if action_value == "back to search":
+                return "search"
+            elif action_value == "description":
+                return "item_description"
+            elif action_value == "< prev":
+                if self.cur_state_name == "item":
+                    return "results"
+                elif self.cur_state_name == "item_description":
+                    return "item"
+            elif not action_value in webshop_state_description[self.cur_state_name]['actions'] and self.cur_state_name == "results":
+                return "item"
+        return self.cur_state_name
 
-    def step(self, *args, **kwargs):
+    def step(self, *args, **kwargs) -> State:
         ret = list(self.env.step(*args, **kwargs))
+        self.cur_state_name = self.state_name_transition(args[0])
         self.current_raw_obs = ret[0]
         ret[0] = self._typed_state(ret[0])
         return ret
 
     def reset(self, *args, **kwargs):
         ret = list(self.env.reset(*args, **kwargs))
+        self.cur_state_name = "search"
         ret[0] = self._typed_state(ret[0])
         return ret
 
@@ -126,32 +148,21 @@ class WebAgentTextEnvTypedState(BaseWrapper):
     def _typed_state(self, raw_state):
         action_dict = self.get_typed_available_actions(raw_state)
 
-
-        # find state with most actions in common
-        actions_set = set(action_dict.keys())
-        max_intersection = 0
-        matched_state_name = None
-        for state, state_actions in self.all_states_actions.items():
-            intersection = len(actions_set.intersection(state_actions))
-            if intersection > max_intersection:
-                max_intersection = intersection
-                matched_state_name = state
-
         # add description to action
-        state_desctiptions = webshop_state_description[matched_state_name]
+        state_desctiptions = webshop_state_description[self.cur_state_name]
         for action_name, action in action_dict.items():
             if action_name in state_desctiptions['actions']:
                 action.description = state_desctiptions['actions'][action_name]
-        
 
-        observation = extract_observation(raw_state, matched_state_name)
-        if matched_state_name == "results":
+
+        observation = extract_observation(raw_state, self.cur_state_name)
+        if self.cur_state_name == "results":
             # Result page
             action_dict['options'] = Action(
                 "options", ActionType.OPTIONS, options=observation["options"]['value']
             )
 
-        elif matched_state_name == "item":
+        elif self.cur_state_name == "item":
             # Item page
             if not "options" in action_dict:
                 action_dict['options'] = Action(
@@ -163,7 +174,7 @@ class WebAgentTextEnvTypedState(BaseWrapper):
             }
 
         return State(
-            matched_state_name,
+            self.cur_state_name,
             observation,
             action_dict,
             description=state_desctiptions["_description"],

@@ -8,12 +8,13 @@ class Transition:
     # state_from
     # transition_function
     # score etc.
-    def __init__(self, state_name_from, transition_function_code):
+    def __init__(self, state_name_from, transition_function_code, extra_namespace={}):
         logger.debug(f"\nCreating transition from {state_name_from}\n{transition_function_code}\n"+"-"*80+"\n")
         self.state_name_from = state_name_from
         self.transition_function_code = transition_function_code.strip()
         self.transition_function = None
         self.score = None
+        self.extra_namespace = extra_namespace
         self._compile_transition_function()
     
     def _compile_transition_function(self):
@@ -22,7 +23,12 @@ class Transition:
             if len(self.compiled_functions) != 1:
                 raise Exception(f"Expected 1 function, found {len(self.compiled_functions)}")
             # self.compiled_functions = [(fname, code_obj), ...]
-            self.transition_function = types.FunctionType(self.compiled_functions[0][1], globals())
+            global_namespace = globals().copy()
+            global_namespace.update(self.extra_namespace)
+            print("Transition:")
+            print("test_calling_llm" in global_namespace)
+
+            self.transition_function = types.FunctionType(self.compiled_functions[0][1], global_namespace)
         except Exception as e:
             logger.exception(e)
             raise Exception(f"Error compiling transition function:\n {e}")

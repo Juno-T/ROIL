@@ -54,9 +54,10 @@ def test_webshop_item_description():
     env = webshop_wrapper.wrap_text_env(env)
     obs = env.reset()[0]
     obs = env.step(f"search[{s}]")[0]
-    results_obs = extract_observation(obs.raw_state, "results")
-    obs = env.step(f"click[{results_obs['items']['value'][0][0]}]")[0]
+    print(obs.observation['options']['value'])
+    obs = env.step(f"click[{obs.observation['options']['value']['items'][0][0]}]")[0]
+    print(obs.actions)
     obs = env.step(f"click[description]")[0]
-    item_obs = extract_observation(obs.raw_state, "item_description")
-    assert "instruction" in item_obs
-    assert "item_description" in item_obs
+    print(obs.name)
+    assert "instruction" in obs.observation
+    assert "item_description" in obs.observation

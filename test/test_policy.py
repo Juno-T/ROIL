@@ -26,3 +26,13 @@ return "state2"
 def test_transition_compile_error2():
     with pytest.raises(Exception):
         transition = Transition("state1", """x = 1""")
+
+
+from auto_policy_programming.common.llm_helper import test_calling_llm
+def test_transition_function_calling():
+    transition = Transition("state1", """
+def whatever(state):
+    return test_calling_llm()
+""", {"test_calling_llm": test_calling_llm})
+    assert transition.transition_function is not None
+    assert transition("state1") == "test"
