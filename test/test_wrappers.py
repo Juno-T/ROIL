@@ -54,10 +54,21 @@ def test_webshop_item_description():
     env = webshop_wrapper.wrap_text_env(env)
     obs = env.reset()[0]
     obs = env.step(f"search[{s}]")[0]
-    print(obs.observation['options']['value'])
     obs = env.step(f"click[{obs.observation['options']['value']['items'][0][0]}]")[0]
-    print(obs.actions)
     obs = env.step(f"click[description]")[0]
-    print(obs.name)
+    assert "instruction" in obs.observation
+    assert "item_description" in obs.observation
+
+
+def test_webshop_action_execution():
+    s = "something here"
+    env = gym.make('WebAgentTextEnv-v0', observation_mode='text', num_products=1000)
+    env = webshop_wrapper.wrap_text_env(env)
+    obs = env.reset()[0]
+    obs = env.step(obs.actions['search'], s)[0]
+    item = obs.observation['options']['value']['items'][5]
+    obs = env.step(obs.actions['options'], {'items': 5})[0]
+    assert obs.observation["item_name"]['value'].strip() == item[1]
+    obs = env.step(obs.actions['description'])[0]
     assert "instruction" in obs.observation
     assert "item_description" in obs.observation

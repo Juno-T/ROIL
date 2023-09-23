@@ -1,3 +1,4 @@
+from typing import List, Union
 import gym
 from auto_policy_programming.wrappers.base import BaseWrapper
 from auto_policy_programming.fsm.action import Action, ActionType
@@ -83,6 +84,7 @@ class WebAgentTextEnvTypedState(BaseWrapper):
         self.all_states_actions = {
             k: set(v['actions'].keys()) for k, v in webshop_state_description.items()
         }
+        self.cur_state: State = None
         self.cur_state_name = None
     
     def state_name_transition(self, action):
@@ -104,17 +106,51 @@ class WebAgentTextEnvTypedState(BaseWrapper):
                 return "item"
         return self.cur_state_name
 
-    def step(self, *args, **kwargs) -> State:
-        ret = list(self.env.step(*args, **kwargs))
-        self.cur_state_name = self.state_name_transition(args[0])
-        self.current_raw_obs = ret[0]
-        ret[0] = self._typed_state(ret[0])
-        return ret
+    def format_action(self, state: State, action: Action, aux: Union[str, dict]=None) -> List[str]:
+        if action.type == ActionType.TEXT:
+            return [f"{action.name}[{aux}]"]
+
+        if action.type == ActionType.FIXED:
+            return [f"click[{action.name}]"]
+
+        if action.type == ActionType.OPTIONS:
+            if state.name == "results":
+                return [f"click[{state.observation['options']['value']['items'][aux['items']][0]}]"]
+            elif state.name == "item":
+                actions = []
+                for category in aux:
+                    if category in state.observation['options']['value']:
+                        actions.append(f"click[{state.observation['options']['value'][category][aux[category]]}]")
+                # Auto buy after selecting option
+                actions.append(f"click[buy now]")
+                return actions
+
+        raise Exception(f"Unknown action {action}")
+
+    def step(self, *args, **kwargs):
+        if isinstance(args[0], str):
+            ret = list(self.env.step(*args, **kwargs))
+            self.cur_state_name = self.state_name_transition(args[0])
+            self.current_raw_obs = ret[0]
+            ret[0] = self._typed_state(ret[0])
+            self.cur_state = ret[0]
+            return ret
+        else:
+            action = args[0]
+            aux = None
+            if len(args) > 1:
+                aux = args[1]
+            actions = self.format_action(self.cur_state, action, aux)
+            for action in actions:
+                assert isinstance(action, str)
+                ret = list(self.step(action, **kwargs))
+            return ret
 
     def reset(self, *args, **kwargs):
         ret = list(self.env.reset(*args, **kwargs))
         self.cur_state_name = "search"
         ret[0] = self._typed_state(ret[0])
+        self.cur_state = ret[0]
         return ret
 
     def get_typed_available_actions(self, raw_state):
@@ -145,7 +181,7 @@ class WebAgentTextEnvTypedState(BaseWrapper):
             )
         return action_dict
 
-    def _typed_state(self, raw_state):
+    def _typed_state(self, raw_state) -> State:
         action_dict = self.get_typed_available_actions(raw_state)
 
         # add description to action
