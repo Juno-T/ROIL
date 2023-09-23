@@ -16,19 +16,22 @@ def test_webshop():
     env = webshop_wrapper.wrap_text_env(env)
     obs = env.reset()[0]
     assert isinstance(obs, webshop_wrapper.State)
+    assert obs.name == "search"
 
 
-def test_webshop_observation():
+def test_webshop_result_observation():
     searches = ["something here", "other query", "red tall hat"]
     env = gym.make('WebAgentTextEnv-v0', observation_mode='text', num_products=1000)
     env = webshop_wrapper.wrap_text_env(env)
     for s in searches:
         obs = env.reset()[0]
         obs = env.step(f"search[{s}]")[0]
-        results_obs = extract_observation(obs.raw_state, "results")
-        assert "instruction" in results_obs
-        assert "items" in results_obs
-        assert len(results_obs["items"]) > 0
+        assert "instruction" in obs.observation
+        assert "options" in obs.observation
+        assert len(obs.observation["options"]['value']['items']) > 0
+        assert "options" in obs.actions
+        assert "items" in obs.actions['options'].options
+        assert obs.actions['options'].options['items'] == obs.observation['options']['value']['items']
     
 def test_webshop_item_observation():
     s = "something here"
@@ -36,10 +39,24 @@ def test_webshop_item_observation():
     env = webshop_wrapper.wrap_text_env(env)
     obs = env.reset()[0]
     obs = env.step(f"search[{s}]")[0]
+    item = obs.observation['options']['value']['items'][0]
+    obs = env.step(f"click[{item[0]}]")[0]
+    assert "instruction" in obs.observation
+    assert "item_name" in obs.observation
+    assert obs.observation["item_name"]['value'].strip() == item[1]
+    assert "price" in obs.observation
+    assert "options" in obs.actions
+    assert isinstance(obs.actions['options'].options, dict)
+
+def test_webshop_item_description():
+    s = "something here"
+    env = gym.make('WebAgentTextEnv-v0', observation_mode='text', num_products=1000)
+    env = webshop_wrapper.wrap_text_env(env)
+    obs = env.reset()[0]
+    obs = env.step(f"search[{s}]")[0]
     results_obs = extract_observation(obs.raw_state, "results")
-    obs = env.step(f"click[{results_obs['items'][0][0]}]")[0]
-    item_obs = extract_observation(obs.raw_state, "item")
+    obs = env.step(f"click[{results_obs['items']['value'][0][0]}]")[0]
+    obs = env.step(f"click[description]")[0]
+    item_obs = extract_observation(obs.raw_state, "item_description")
     assert "instruction" in item_obs
-    assert "item_name" in item_obs
-    assert item_obs["item_name"].strip() == results_obs["items"][0][1].strip()
-    assert "price" in item_obs
+    assert "item_description" in item_obs

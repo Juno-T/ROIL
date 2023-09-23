@@ -1,11 +1,8 @@
-from enum import Enum
 import gym
-import gym.spaces as spaces
-from pandas import describe_option
-
 from auto_policy_programming.wrappers.base import BaseWrapper
 from auto_policy_programming.fsm.action import Action, ActionType
 from auto_policy_programming.fsm.state import State
+from auto_policy_programming.wrappers.webshop.observation_extractions import extract_observation
 
 
 webshop_action_keywords = {
@@ -19,32 +16,39 @@ webshop_action_keywords = {
     "buy now": Action("buy now", ActionType.FIXED),
 }
 
+remove_from_clickables = ["features", "reviews"]
+
 webshop_state_description = {
     "search": {
-        "_description": "",
+        "_description": "Search page contains a search input which can be use to search for desired items.",
         "observations": {
-            "instruction": "",
+            "instruction": "Instruction to find the desired item.",
         },
         "actions": {
-            "search": "",
+            "search": "Search for the desired item given the search input.",
         },
     },
     "results": {
-        "_description": "",
+        "_description": "Results page contains a paginated list of items that match the search query.",
         "observations": {
-            "instruction": "",
-            "items": "A list of triplet (item_code, item_name, item_price).",
+            "instruction": "Instruction to find the desired item.",
+            "options": "Result items of the search query."
         },
         "actions": {
-            "back to search": "",
-            "< prev": "",
-            "next >": "",
-            "options": "",
+            "back to search": "Go back to search page",
+            "< prev": "Go to previous page",
+            "next >": "Go to next page",
+            "options": "Select an item and navigate to the item page.",
         },
     },
     "item": {
-        "_description": "",
-        "observations": {},
+        "_description": "Item page contains overview of the item, including item's options and buy now button.",
+        "observations": {
+            "instruction": "Instruction to find the desired item.",
+            "item_name": "Item name.",
+            "price": "Item price in string.",
+            "options": "A dictionary of categorized options for the item.",
+        },
         "actions": {
             "< prev": "back to result page",
             "description": "",
@@ -56,7 +60,10 @@ webshop_state_description = {
     },
     "item_description": {
         "_description": "",
-        "observations": {},
+        "observations": {
+            "instruction": "Instruction to find the desired item.",
+            "item_description": "",
+        },
         "actions": {
             "< prev": "back to item page",
             "back to search": "",
@@ -90,6 +97,7 @@ class WebAgentTextEnvTypedState(BaseWrapper):
 
     def get_typed_available_actions(self, raw_state):
         raw_actions = self.env.get_available_actions()["clickables"]
+        raw_actions = [a for a in raw_actions if not a in remove_from_clickables]
         action_dict = {}
         option_lists = []
         for action in raw_actions:
@@ -104,8 +112,10 @@ class WebAgentTextEnvTypedState(BaseWrapper):
             for element in elements[::-1]:
                 if element in option_lists:
                     cur_set.append(element)
-                elif len(cur_set) > 0:
+                elif len(cur_set) > 0 and (not element in webshop_action_keywords): # ignore result page
                     option_dict[element] = cur_set
+                    cur_set = []
+                else:
                     cur_set = []
         if len(option_dict) > 0:
             action_dict["options"] = Action(
@@ -116,25 +126,45 @@ class WebAgentTextEnvTypedState(BaseWrapper):
     def _typed_state(self, raw_state):
         action_dict = self.get_typed_available_actions(raw_state)
 
+
         # find state with most actions in common
         actions_set = set(action_dict.keys())
         max_intersection = 0
-        max_intersection_state = None
+        matched_state_name = None
         for state, state_actions in self.all_states_actions.items():
             intersection = len(actions_set.intersection(state_actions))
             if intersection > max_intersection:
                 max_intersection = intersection
-                max_intersection_state = state
+                matched_state_name = state
 
         # add description to action
-        state_desctiptions = webshop_state_description[max_intersection_state]
+        state_desctiptions = webshop_state_description[matched_state_name]
         for action_name, action in action_dict.items():
             if action_name in state_desctiptions['actions']:
                 action.description = state_desctiptions['actions'][action_name]
+        
+
+        observation = extract_observation(raw_state, matched_state_name)
+        if matched_state_name == "results":
+            # Result page
+            action_dict['options'] = Action(
+                "options", ActionType.OPTIONS, options=observation["options"]['value']
+            )
+
+        elif matched_state_name == "item":
+            # Item page
+            if not "options" in action_dict:
+                action_dict['options'] = Action(
+                    "options", ActionType.OPTIONS, options={}
+                )
+            observation['options'] = {
+                "dtype": "Dict[category_name: str, List[option: str]], or an empty dict \{\} if no options",
+                "value": action_dict["options"].options
+            }
 
         return State(
-            max_intersection_state,
-            {},
+            matched_state_name,
+            observation,
             action_dict,
             description=state_desctiptions["_description"],
             raw_state=raw_state,
