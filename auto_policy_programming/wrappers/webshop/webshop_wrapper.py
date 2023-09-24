@@ -80,12 +80,13 @@ def wrap_text_env(env):
 class WebAgentTextEnvTypedState(BaseWrapper):
     def __init__(self, env: gym.Env):
         super().__init__(env)
-        self.current_raw_obs = None
+        self.cur_raw_obs = None
         self.all_states_actions = {
             k: set(v['actions'].keys()) for k, v in webshop_state_description.items()
         }
         self.cur_state: State = None
         self.cur_state_name = None
+        self.env_state_description = webshop_state_description
     
     def state_name_transition(self, action):
         action_type = action.split("[")[0]
@@ -115,12 +116,12 @@ class WebAgentTextEnvTypedState(BaseWrapper):
 
         if action.type == ActionType.OPTIONS:
             if state.name == "results":
-                return [f"click[{state.observation['options']['value']['items'][aux['items']][0]}]"]
+                return [f"click[{state.observations['options']['value']['items'][aux['items']][0]}]"]
             elif state.name == "item":
                 actions = []
                 for category in aux:
-                    if category in state.observation['options']['value']:
-                        actions.append(f"click[{state.observation['options']['value'][category][aux[category]]}]")
+                    if category in state.observations['options']['value']:
+                        actions.append(f"click[{state.observations['options']['value'][category][aux[category]]}]")
                 # Auto buy after selecting option
                 actions.append(f"click[buy now]")
                 return actions
@@ -131,7 +132,7 @@ class WebAgentTextEnvTypedState(BaseWrapper):
         if isinstance(args[0], str):
             ret = list(self.env.step(*args, **kwargs))
             self.cur_state_name = self.state_name_transition(args[0])
-            self.current_raw_obs = ret[0]
+            self.cur_raw_obs = ret[0]
             ret[0] = self._typed_state(ret[0])
             self.cur_state = ret[0]
             return ret

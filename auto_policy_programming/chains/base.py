@@ -55,10 +55,11 @@ class ParsingChain(Chain):
             await run_manager.on_text("Calling llm")
         return self.output_parser(response.generations[0][0].text)
     
-    def __call__(self, inputs: Union[Dict[str, Any], Any], *args, **kwargs):
+    def __call__(self, inputs: Union[Dict[str, Any], Any], *args, return_only_outputs=True, **kwargs):
         if isinstance(inputs, dict):
             inputs = self.input_pre_format(inputs)
-        return super().__call__(inputs, *args, **kwargs)
+        response = super(ParsingChain, self).__call__(inputs, *args, return_only_outputs=True,  **kwargs)
+        return response
     
     def acall(self, inputs: Union[Dict[str, Any], Any], *args, **kwargs):
         if isinstance(inputs, dict):

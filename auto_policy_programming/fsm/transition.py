@@ -38,6 +38,7 @@ class Transition:
         if self.transition_function is None:
             raise Exception("Transition function not compiled")
         # TODO: validate & format state
+        raise NotImplementedError()
         return self.transition_function(state)
 
 
