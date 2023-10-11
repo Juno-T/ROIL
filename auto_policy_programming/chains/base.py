@@ -1,11 +1,18 @@
 
 from abc import abstractmethod
 from ast import Dict
+from math import log
 from typing import Any, Dict, List, Optional, Union
+from venv import logger
 from langchain import BasePromptTemplate
 from langchain.callbacks.manager import Callbacks
 from langchain.schema.language_model import BaseLanguageModel
 from langchain.chains.base import Chain
+
+import logging
+
+logger = logging.getLogger(__name__)
+# format with date time, line number, and function name
 
 class ParsingChain(Chain):
     prompt: BasePromptTemplate
@@ -37,6 +44,7 @@ class ParsingChain(Chain):
         run_manager,
     ) -> Dict[str, str]:
         prompt_value = self.prompt.format_prompt(**inputs)
+        logger.info(f"\nPrompt value: {prompt_value}")
         response = self.llm.generate_prompt(
             [prompt_value], callbacks=run_manager.get_child() if run_manager else None)
         if run_manager:
@@ -49,6 +57,7 @@ class ParsingChain(Chain):
         run_manager,
     ) -> Dict[str, str]:
         prompt_value = self.prompt.format_prompt(**inputs)
+        logger.debug(f"\nPrompt value: {prompt_value}")
         response = await self.llm.generate_prompt(
             [prompt_value], callbacks=run_manager.get_child() if run_manager else None)
         if run_manager:
@@ -61,7 +70,7 @@ class ParsingChain(Chain):
         response = super(ParsingChain, self).__call__(inputs, *args, return_only_outputs=True,  **kwargs)
         return response
     
-    def acall(self, inputs: Union[Dict[str, Any], Any], *args, **kwargs):
+    async def acall(self, inputs: Union[Dict[str, Any], Any], *args, **kwargs):
         if isinstance(inputs, dict):
             inputs = self.input_pre_format(inputs)
         return super().__call__(inputs, *args, **kwargs)

@@ -3,14 +3,13 @@
 import os
 from langchain.chat_models import ChatOpenAI
 from langchain.llms.fake import FakeListLLM
-from auto_policy_programming.chains import StateTransition
+from auto_policy_programming import chains
 from auto_policy_programming.fsm.state import State
 from auto_policy_programming.fsm.transition import Transition
-from auto_policy_programming.wrappers.base import BaseWrapper
 
 
 class AutoPolicyProgrammingFSM:
-    def __init__(self, env: BaseWrapper):
+    def __init__(self, env):
         self.env = env
         self.env_state_description = self.env.env_state_description
         self.transition_functions = {
@@ -21,7 +20,7 @@ class AutoPolicyProgrammingFSM:
         # fsm_llm = ChatOpenAI(model="gpt-3.5-turbo-0613", temperature=0.7, max_tokens=1024, openai_api_key=os.environ.get("OPENAI_APIKEY", None))
         # llm = ChatOpenAI(model="gpt-4-0613", temperature=0.7, max_tokens=1024, openai_api_key=os.environ.get("OPENAI_APIKEY", None))
 
-        self.transition_function_generator =  StateTransition(llm=fsm_llm, env_state_description=self.env_state_description)
+        self.transition_function_generator =  chains.StateTransition(llm=fsm_llm, env_state_description=self.env_state_description)
     
     def reset(self):
         return self.env.reset()

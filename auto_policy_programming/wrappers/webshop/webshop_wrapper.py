@@ -1,10 +1,79 @@
 from typing import List, Union
 import gym
+from web_agent_site.envs.web_agent_text_env import WebAgentTextEnv
 from auto_policy_programming.wrappers.base import BaseWrapper
 from auto_policy_programming.fsm.action import Action, ActionType
 from auto_policy_programming.fsm.state import State
 from auto_policy_programming.wrappers.webshop.observation_extractions import extract_observation
 
+def state_name_transition(prev_state_name, action, cur_state_unprocessed_actions):
+    action_type = action.split("[")[0]
+    action_value = action.split("[")[1][:-1]
+    if action_type == "search":
+        return "results"
+    elif action_type == "click":
+        if action_value == "back to search":
+            return "search"
+        elif action_value == "description":
+            return "item_description"
+        elif action_value == "< prev":
+            if 'click[description]' in cur_state_unprocessed_actions:
+                return "item"
+            if prev_state_name == "item":
+                return "results"
+            elif prev_state_name == "item_description":
+                return "item"
+        elif action_value == "next >" and prev_state_name == "results":
+            return "results"
+        elif prev_state_name == "results":
+            return "item"
+        elif prev_state_name == "item" and action_value in ["features", "reviews"]:
+            return "item"
+    return prev_state_name
+
+fixed_actions = [
+    'features',
+    '< prev',
+    'reviews',
+    'next >',
+    'description',
+    'back to search',
+    'buy now',
+]
+
+def clean_available_action(cur_state_name, available_action):
+    processed_actions = []
+    if cur_state_name=="search":
+        processed_actions.append("search[<search query>]")
+    elif cur_state_name=="results":
+        processed_actions.append("click[<item_code>]")
+    for a in available_action:
+        if a in ["features", "reviews"]:
+            continue
+        if a.lower() in fixed_actions or cur_state_name=="item":
+            processed_actions.append(f"click[{a}]")
+    return processed_actions
+
+class WebAgentTextEnvWithStateName(WebAgentTextEnv):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.cur_state_name = None
+    
+    def reset(self, *args, **kwargs):
+        ret = super().reset(*args, **kwargs)
+        self.cur_state_name = "search"
+        return ret
+    
+    def step(self, *args, **kwargs):
+        ret = super().step(*args, **kwargs)
+        self.cur_state_name = self.state_name_transition(args[0])
+        return ret
+
+    def state_name_transition(self, action: str):
+        return state_name_transition(self.cur_state_name, action, self.get_available_actions()["clickables"])
+
+    def get_cleaned_available_actions(self):
+        return clean_available_action(self.cur_state_name, self.get_available_actions()["clickables"])
 
 webshop_action_keywords = {
     "search": Action("search", ActionType.TEXT),
@@ -23,7 +92,7 @@ webshop_state_description = {
     "search": {
         "_description": "Search page contains a search input which can be use to search for desired items.",
         "observations": {
-            "instruction": "Instruction to find the desired item.",
+            "instruction": "Description of the desired item.",
         },
         "actions": {
             "search": "Search for the desired item given the search input.",
@@ -32,7 +101,7 @@ webshop_state_description = {
     "results": {
         "_description": "Results page contains a paginated list of items that match the search query.",
         "observations": {
-            "instruction": "Instruction to find the desired item.",
+            "instruction": "Description of the desired item.",
             "options": "Result items of the search query."
         },
         "actions": {
@@ -45,7 +114,7 @@ webshop_state_description = {
     "item": {
         "_description": "Item page contains overview of the item, including item's options and buy now button.",
         "observations": {
-            "instruction": "Instruction to find the desired item.",
+            "instruction": "Description of the desired item.",
             "item_name": "Item name.",
             "price": "Item price in string.",
             "options": "A dictionary of categorized options for the item.",
@@ -62,7 +131,7 @@ webshop_state_description = {
     "item_description": {
         "_description": "",
         "observations": {
-            "instruction": "Instruction to find the desired item.",
+            "instruction": "Description of the desired item.",
             "item_description": "",
         },
         "actions": {
