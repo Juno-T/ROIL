@@ -1,3 +1,4 @@
+from math import e
 import os
 import sys
 import time
@@ -15,7 +16,7 @@ from langchain.llms.fake import FakeListLLM
 from langchain.callbacks import get_openai_callback
 from auto_policy_programming import chains
 from auto_policy_programming.rule import Rule, RuleSet
-from auto_policy_programming.wrappers.webshop.webshop_wrapper import WebAgentTextEnvWithStateName
+from auto_policy_programming.wrappers.webshop.webshop_wrapper import WebAgentTextEnvReActStyle, WebAgentTextEnvWithStateName
 
 DEBUG = True
 MAX_PARALLEL = 1
@@ -28,69 +29,23 @@ logging.basicConfig(
     format='%(asctime)s %(levelname)s %(filename)s %(funcName)s %(lineno)d: %(message)s',
     level=logging.DEBUG if DEBUG else logging.INFO)
 
-
-# def eval_one_index(resource_idx, idx: int, get_action, step_limit=20):
-#     assert idx<500
-    
-#     # use resource_idx for env AND chain
-#     env = envs[resource_idx%len(envs)]
-    
-#     history = {
-#         'state_name': [],
-#         'action': [],
-#         'reward': [],
-#         'info': [],
-#     }
-#     obs = env.reset(idx)[0]
-#     total_reward = 0.0
-#     step=0
-#     done = False
-#     info = None
-#     reward = 0.0
-#     while(True):
-#         print(obs)
-#         state_name = env.cur_state_name
-#         available_actions = env.get_cleaned_available_actions()
-#         action = get_action(state_name, obs, available_actions)
-#         history['state_name'].append(env.cur_state_name)
-#         history['action'].append(action)
-#         history['reward'].append(reward)
-#         history['info'].append(info)
-#         obs, reward, done, info = env.step(action)
-#         total_reward += reward
-#         if done:
-#             break
-#         step+=1
-#         if step>=step_limit:
-#             break
-    
-#     history['state_name'].append(obs)
-#     history['action'].append("N/A")
-#     history['reward'].append(reward)
-#     history['info'].append(info)
-#     history['total_reward'] = total_reward
-#     # TODO: unoccupy resource
-#     raise NotImplementedError
-
-#     return history
-
-def get_rules(ruleset, state, num_rules=10):
+def get_rules(ruleset, state, num_rules=5):
     best_rules = ruleset.best_rules[state].copy()
     sorted_rules = sorted(best_rules.values(), key=lambda x: x.score, reverse=True)
     return sorted_rules[:num_rules]
 
 
-async def async_chain_run(chain, obs, state_name, taken_actions, available_actions, rules):
+async def async_chain_run(chain, instruction, obs, state_name, available_actions, rules, react_history):
     try:
         inputs = {
+            "instruction": instruction,
             "observation": obs,
             "state_name": state_name,
             "available_actions": available_actions,
             "rule_list": rules,
-            "taken_actions": taken_actions,
+            "react_history": react_history
         }
         # print(chain.test_format_input(inputs))
-        
         with get_openai_callback() as cb:
             output = await chain.acall(inputs)
         output["token_count"] = int(cb.total_tokens)
@@ -121,17 +76,18 @@ def eval(
     envs,
     ruleset_path: str,
     eval_record_path: str,
-    split="dev",
     seed=0,
-    num_eval=500,
+    perc_eval=1.0,
     max_ep_len=15,
 ):
     np.random.seed(seed)
     start_time = datetime.now()
-    test_indices = np.arange(num_eval)
-    if split=="dev":
-        test_indices = test_indices+500
-    test_indices = test_indices.tolist()
+    if perc_eval==1.0:
+        num_eval = 500
+        test_indices = np.arange(500).tolist()
+    else:
+        num_eval = int(perc_eval * 500)
+        test_indices = np.arange(num_eval).tolist()
     test_indices.append(-1) # mark the end for final eval loop
     ruleset = RuleSet.json_load(ruleset_path)
     if os.path.exists(eval_record_path):
@@ -144,10 +100,10 @@ def eval(
             "average_reward": 0.0, "eval_history": {}
         }
 
-    best_rules = {state: get_rules(ruleset, state) for state in ruleset.states}
-    # llm = FakeListLLM(responses=["selected_one_best_action: search[asdfg]\n\n"])
-    llm = ChatOpenAI(model="gpt-3.5-turbo-0613", temperature=0, max_tokens=1024, openai_api_key=os.environ.get("OPENAI_APIKEY", None))
-    eval_action_chain = chains.EvaluationStep(llm=llm)
+    best_rules = {state: get_rules(ruleset, state, 5) for state in ruleset.states}
+    # llm = FakeListLLM(responses=["thought: my thought\nrelevant_rule: 1\naction: search[asdfg]\n\n"])
+    llm = ChatOpenAI(model="gpt-3.5-turbo-0613", temperature=0.6, max_tokens=1024, openai_api_key=os.environ.get("OPENAI_APIKEY", None))
+    eval_action_chain = chains.EvaluationReactStep(llm=llm)
     
     env_status = [0] * len(envs)
     env_ep_len = [0] * len(envs)
@@ -161,6 +117,7 @@ def eval(
             'info': [],
             'selected_rule_id': [],
             'selected_rule_number': [],
+            'react_history': [],
         } for idx in test_indices if idx!=-1
     }
 
@@ -184,6 +141,7 @@ def eval(
                     env_ep_len[env_i]=0
                     env_test_idx[env_i]=test_idx
                     env_cur_ret[env_i] = list(envs[env_i].reset(test_idx))+[False, None]
+                    tmp_records[test_idx]["instruction"] = envs[env_i].instruction
                     obs, reward, done, info = env_cur_ret[env_i]
                     assigned_env = True
                     print(f"\n\nAssigned env {env_i} to test_idx {test_idx}\n\n")
@@ -201,11 +159,12 @@ def eval(
                     env = envs[env_i]
                     obs, reward, done, info = env_cur_ret[env_i]
                     state_name = env.cur_state_name
-                    taken_actions = tmp_records[env_test_idx[env_i]]['action'][-10:]
                     available_actions = env.get_cleaned_available_actions()
                     # random rule order
                     query_rulelist[env_i] = np.random.permutation(best_rules[state_name].copy()).tolist()
-                    queries.append((obs, state_name, taken_actions, available_actions, [r.content for r in query_rulelist[env_i]]))
+                    react_history = tmp_records[env_test_idx[env_i]]['react_history']
+                    instruction = tmp_records[env_test_idx[env_i]]["instruction"]
+                    queries.append((instruction, obs, state_name, available_actions, [r.content for r in query_rulelist[env_i]], react_history))
                 else:
                     queries.append(None)
             
@@ -230,6 +189,8 @@ def eval(
                 if not outputs[env_i].get("valid", False):
                     print(f"env{env_i}({env_test_idx[env_i]}) invalid output")
                     continue
+
+
                 env = envs[env_i]
                 obs, reward, done, info = env_cur_ret[env_i]
                 reward = reward if reward is not None else 0.0
@@ -250,6 +211,7 @@ def eval(
                     tmp_records[env_test_idx[env_i]]['action'].append(action)
                     tmp_records[env_test_idx[env_i]]['reward'].append(float(reward))
                     tmp_records[env_test_idx[env_i]]['info'].append(info)
+                    tmp_records[env_test_idx[env_i]]['react_history'].append((obs, outputs[env_i]["thought"], action))
                     log = log+f"\nenv{env_i}({env_test_idx[env_i]}) {env.cur_state_name} {action} "
 
                     env_cur_ret[env_i] = env.step(action)
@@ -283,6 +245,8 @@ def eval(
                             env_ep_len[env_i]=0
                             env_test_idx[env_i]=test_idx
                             env_cur_ret[env_i] = list(envs[env_i].reset(test_idx))+[False, None]
+                            tmp_records[test_idx]["instruction"] = envs[env_i].instruction
+                            obs, reward, done, info = env_cur_ret[env_i]
                             obs, reward, done, info = env_cur_ret[env_i]
                             assigned_env = True
                             print(f"\n\nAssigned env {env_i} to test_idx {test_idx}\n\n")
@@ -308,7 +272,7 @@ if __name__ == "__main__":
         attempt = 5
         while attempt>0:
             try:
-                env = WebAgentTextEnvWithStateName(observation_mode='text_rich')
+                env = WebAgentTextEnvReActStyle(observation_mode='text_rich')
                 break
             except:
                 attempt-=1
@@ -322,11 +286,10 @@ if __name__ == "__main__":
         if child.is_dir():
             ruleset_dir = child
             ruleset_path = ruleset_dir / "checkpoint/ruleset_checkpoint_timestep_500.json"
-            eval_record_path = ruleset_dir / "eval" / "eval_record_500_w_act_clean.json"
+            eval_record_path = ruleset_dir / "eval" / "eval_record_500_react_style.json"
         eval(
             envs,
-            # split="test",
             ruleset_path=str(ruleset_path),
             eval_record_path=str(eval_record_path),
-            num_eval = 110,
+            perc_eval=0.01,
         )

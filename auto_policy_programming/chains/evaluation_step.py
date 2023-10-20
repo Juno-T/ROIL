@@ -31,6 +31,7 @@ class EvaluationStep(ParsingChain):
         inputs: {
             "observation": ,
             "state_name": ,
+            "taken_actions":,
             "available_actions": ,
             "rule_list": List[str]
         }
@@ -38,10 +39,14 @@ class EvaluationStep(ParsingChain):
         rule_list = []
         for i, rule in enumerate(inputs["rule_list"]):
             rule_list.append(f"{i+1}. {rule}")
+        taken_actions = ""
+        if len(inputs['taken_actions']) > 0:
+            taken_actions = ", ".join(inputs["taken_actions"])
         return {
             "observation": inputs["observation"],
             "available_actions": ", ".join(inputs["available_actions"]),
-            "rule_list": "\n".join(rule_list)
+            "rule_list": "\n".join(rule_list),
+            "taken_actions": taken_actions
         }
 
     @override
@@ -49,7 +54,7 @@ class EvaluationStep(ParsingChain):
         parsed_output = {"raw_output": output}
         selected_action = extract_line(output, "selected_one_best_action")
         selected_action = [action.strip() for action in selected_action.split('AND')]
-        selected_rule_number = extract_rule_number(output, keyword="relevant_rule_number")
+        selected_rule_number = extract_rule_number(output)
         try:
             parsed_output["selected_rule_number"] = int(selected_rule_number)
         except:
@@ -65,7 +70,7 @@ class EvaluationStep(ParsingChain):
         return self.output_parser(output)
 
     def test_format_input(self, inputs: Dict[str, Any]) -> str:
-        inputs = self.input_pre_format(traj_sa=inputs)
+        inputs = self.input_pre_format(inputs)
         return self.prompt.format_prompt(**inputs)
 
 
@@ -118,7 +123,10 @@ selected_one_best_action: <action_name>[<action_input>]
 observation:
 {observation}
 
-available_action list to :
+previously taken actions:
+{taken_actions}
+
+available_action list to select from:
 {available_actions}
 
 rule_list to select from:

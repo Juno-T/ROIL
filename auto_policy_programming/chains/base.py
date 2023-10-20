@@ -58,7 +58,7 @@ class ParsingChain(Chain):
     ) -> Dict[str, str]:
         prompt_value = self.prompt.format_prompt(**inputs)
         logger.debug(f"\nPrompt value: {prompt_value}")
-        response = await self.llm.generate_prompt(
+        response = await self.llm.agenerate_prompt(
             [prompt_value], callbacks=run_manager.get_child() if run_manager else None)
         if run_manager:
             await run_manager.on_text("Calling llm")
@@ -73,7 +73,7 @@ class ParsingChain(Chain):
     async def acall(self, inputs: Union[Dict[str, Any], Any], *args, **kwargs):
         if isinstance(inputs, dict):
             inputs = self.input_pre_format(inputs)
-        return super().__call__(inputs, *args, **kwargs)
+        return await super().acall(inputs, *args, **kwargs)
 
     @property
     def _chain_type(self) -> str:
