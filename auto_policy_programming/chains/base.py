@@ -34,7 +34,10 @@ class ParsingChain(Chain):
     @abstractmethod
     def output_parser(self, output: str) -> Dict[str, str]:
         raise NotImplementedError()
-    
+
+    def reset(self):
+        pass
+
     def input_pre_format(self, inputs: Dict) -> Dict[str, any]:
         return inputs
     
@@ -75,6 +78,13 @@ class ParsingChain(Chain):
             inputs = self.input_pre_format(inputs)
         return await super().acall(inputs, *args, **kwargs)
 
+    def test_parse_output(self, output: str) -> Dict[str, str]:
+        return self.output_parser(output)
+
+    def test_format_input(self, inputs: Dict[str, Any]) -> str:
+        inputs = self.input_pre_format(inputs)
+        return self.prompt.format_prompt(**inputs)
     @property
     def _chain_type(self) -> str:
         return super()._chain_type + "_ParsingChain"
+    

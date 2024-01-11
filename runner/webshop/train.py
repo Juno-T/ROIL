@@ -1,5 +1,7 @@
 import os
 import sys
+
+
 sys.path.append(os.getcwd())
 
 import logging
@@ -12,6 +14,8 @@ from langchain.llms.fake import FakeListLLM
 from langchain.callbacks import get_openai_callback
 from auto_policy_programming import chains
 from auto_policy_programming.rule import Rule, RuleSet
+from auto_policy_programming.common.utils import timeout
+from auto_policy_programming.wrappers.timelimit import low_timestep_obs_aug
 
 DEBUG = True
 
@@ -29,12 +33,23 @@ def select_learning_rules(ruleset: RuleSet, state: str, num_rules: int = 10, tim
     sorted_rules = sorted(best_rules.values(), key=lambda x: x.calc_ucb(timestep), reverse=True)
     return sorted_rules[:num_rules]
 
+def increment_selection_count(ruleset: RuleSet, state: str, rule_type: str, rule_id: int):
+    ruleset.rules[state][rule_type][rule_id].selection_count += 1
+    ruleset.best_rules[state][rule_type].selection_count += 1
+
+@timeout(seconds=30)
+def timeout_chain_call(chain, inputs):
+    return chain(inputs=inputs)
+
 def train(
+    save_dir: str,
     seed=0,
-    num_training_steps = 500,
+    num_training_steps = 100,
     num_rule_per_step = 10,
     learning_step_max_retry = 2,
-    checkpoint_interval = 25,
+    low_timestep_threshold = -1,
+    checkpoint_interval = 10,
+    filtered_traj = False,
 ):
     start_time = datetime.now()
     np.random.seed(seed)
@@ -46,22 +61,31 @@ def train(
         "checkpoint_interval": checkpoint_interval,
         "learning_policy": "contrastive_imitation",
         "rule_selection_method": "ucb",
+        "low_timestep_threshold": low_timestep_threshold,
+        "filtered_traj": filtered_traj,
+        "llm": "gpt-3.5-turbo-0613",
+        # "llm": "gpt-4-0613",
     }
     logging.info(f"TRAIN CONFIG:\n{json.dumps(train_config, indent=4)}\n")
 
-    checkpoint_folder = log_folder / "checkpoint"
+    assert not os.path.exists(save_dir)
+    save_dir = Path(save_dir)
+    save_dir.mkdir(parents=True, exist_ok=True)
+    checkpoint_folder = save_dir / "checkpoint"
     checkpoint_folder.mkdir(parents=True, exist_ok=True)
-    progress_log_path = log_folder / "progress_log.json"
 
     # llm = FakeListLLM(responses=[
     #     f"related_rule_number: 1\nfound_rule: My found rule{i}\nrelated_rule_content: rule1\nsame_intention\nfound_rule_better\n"
     #     + "\nNO_EXISTING_RULE" if i==0 else "" for i in range(20)
     # ])
     # llm = ChatOpenAI(model="gpt-3.5-turbo", temperature=0.6, max_tokens=1024, openai_api_key=os.environ.get("OPENAI_APIKEY", None))
-    llm = ChatOpenAI(model="gpt-3.5-turbo-0613", temperature=0.6, max_tokens=1024, openai_api_key=os.environ.get("OPENAI_APIKEY", None))
+    llm = ChatOpenAI(model=train_config["llm"], temperature=0.6, max_tokens=1024, openai_api_key=os.environ.get("OPENAI_APIKEY", None))
     # llm = ChatOpenAI(model="gpt-4-0613", temperature=0.6, max_tokens=1024, openai_api_key=os.environ.get("OPENAI_APIKEY", None))
 
-    with open("./data/human_traj_sa_by_state.json", "r") as f:
+
+    traj_path = "./data/webshop/human_traj_sa_by_state_filtered.json" if filtered_traj \
+        else "./data/webshop/human_traj_sa_by_state.json"
+    with open(traj_path, "r") as f:
         traj = json.load(f)
 
     ruleset = RuleSet(list(traj.keys()))
@@ -94,6 +118,11 @@ def train(
                 break
         contrast_sa = selected_state_sa_list[contrast_sa_index]
         records = [selected_sa, contrast_sa]
+        if low_timestep_threshold > 0:
+            for i in range(len(records)):
+                remaining_timesteps = records[i]['original_length'] - records[i]['timestep']
+                if remaining_timesteps <= low_timestep_threshold:
+                    records[i]["state"] = low_timestep_obs_aug(records[i]["state"])
 
         existing_rules = select_learning_rules(ruleset, selected_state_name, num_rule_per_step, training_step)
         existing_rules_str = [r.content for r in existing_rules]
@@ -105,7 +134,7 @@ def train(
         for __ in range(learning_step_max_retry):
             try:
                 with get_openai_callback() as cb:
-                    output = contrastive_step(inputs={"records": records, "existing_rules": existing_rules_str})
+                    output = timeout_chain_call(contrastive_step, inputs={"records": records, "existing_rules": existing_rules_str})
                     token_count += int(cb.total_tokens)
             except Exception as e:
                 # log full traceback
@@ -118,13 +147,35 @@ def train(
             logging.debug(f"PROMPT:\n{prompt}\nRAW OUTPUT:\n{output['raw_output']}\n")
             if output["valid"]:
                 break
+        
+        # Output parsing
+        parse_successfully = True
         if not output["valid"]:
+            parse_successfully = False
             logging.info(f"INVALID OUTPUT")
         else:
             selected_rule = None
-            if output["related_rule_number"] is not None and output["related_rule_number"] < len(existing_rules_str):
+            if output["no_existing_rule"]:
+                selected_rule = None
+            elif isinstance(output["related_rule_number"], int) and output["related_rule_number"] < len(existing_rules_str):
                 selected_rule = existing_rules[output["related_rule_number"]]
-            ruleset.update(selected_state_name, output, selected_rule)
+            else:
+                parse_successfully = False
+            new_rule = output["found_rule"]
+            if output["related_rule_classification"] == "similar_intention":
+                new_rule = output["updated_rule"]
+            if new_rule is None:
+                parse_successfully = False
+            else:
+                new_rule = new_rule.replace("\n", " ")
+                new_rule = new_rule.replace("{", "")
+                new_rule = new_rule.replace("}", "")
+
+        if parse_successfully:
+            for i, rule in enumerate(existing_rules):
+                increment_selection_count(ruleset, selected_state_name, rule.rule_type, rule.rule_id)
+            ruleset.update(selected_state_name, selected_rule, new_rule, output["related_rule_classification"])
+
         
         progress_log["token_counts"].append(token_count)
         progress_log["valid"].append(output["valid"])
@@ -132,21 +183,30 @@ def train(
         progress_log["time_elapsed_s"].append(elapsed_time_s)
         for state in ruleset.states:
             progress_log["rule_type_counts"][state].append(len(ruleset.rules[state]))
-        est_cost = sum(progress_log["token_counts"])*0.0017/1000
-        print(f"ELAPSED_TIME_S: {elapsed_time_s} STEP: {training_step+1}/{num_training_steps} TOKENS: {token_count} EST_TOTAL_COST($): {est_cost} VALID: {output['valid']}")
-    
+        est_cost = sum(progress_log["token_counts"])*0.0017/1000*(25 if "gpt-4" in train_config["llm"] else 1)
+        log = f"ELAPSED_TIME_S: {elapsed_time_s} STEP: {training_step+1}/{num_training_steps} TOKENS: {token_count} EST_TOTAL_COST($): {est_cost} VALID: {output['valid']}"
+        print(log)
+        logging.info(log)
+
+        train_config["progress_log"] = progress_log
         if (training_step + 1) % checkpoint_interval == 0:
             ruleset.json_save(checkpoint_folder / f"ruleset_checkpoint_timestep_{training_step + 1}.json")
-            with open(progress_log_path, "w") as f:
-                json.dump(progress_log, f, indent=4)
+            with open(save_dir / "train_config.json", "w") as f:
+                json.dump(train_config, f, indent=4)
 
     
     final_save_path = checkpoint_folder / f"ruleset_checkpoint_final_timestep_{num_training_steps}.json"
     ruleset.json_save(final_save_path)
-    train_config["final_ruleset_path"] = str(Path.resolve(final_save_path))
-    with open(log_folder / "train_config.json", "w") as f:
+    train_config["final_ruleset_path"] = str(Path.resolve(final_save_path).relative_to(Path.resolve(save_dir)))
+    with open(save_dir / "train_config.json", "w") as f:
         json.dump(train_config, f, indent=4)
 
 
 if __name__ == "__main__":
-    train(seed=2)
+    # seed = 0
+    for seed in range(3):
+        # if seed==0:
+        #     continue
+        save_dir = f"./rulesets/contrastive_imitation/all_traj/w_time_obs_timelimit_2/{str(seed)}"
+        train(save_dir, seed=seed,
+            filtered_traj=False, low_timestep_threshold=2)

@@ -37,7 +37,7 @@ class ContrastiveImitation(ParsingChain):
         parsed_input = {}
         activity_records = []
         for i, record in enumerate(traj_records):
-            activity_records.append(format_activity_record(i+1, record["state"], record["available_action"], record["action"]))
+            activity_records.append(format_activity_record(i+1, record["state"], record["action_history"], record["available_action"], record["action"]))
         parsed_input["activity_records"] = "\n".join(activity_records)
         if len(existing_rules) == 0:
             parsed_input["numbered_existing_rules"] = "No existing rules"
@@ -76,6 +76,9 @@ class ContrastiveImitation(ParsingChain):
         elif "selected_rule_better" in output:
             found_rule_better = False
 
+        if related_rule_classification == "same_intention" and found_rule_better is not None:
+            related_rule_classification = "found_rule_better" if found_rule_better else "selected_rule_better"
+
         updated_rule = extract_line(output, "updated_rule")
 
         parsed_output = {
@@ -90,14 +93,6 @@ class ContrastiveImitation(ParsingChain):
         parsed_output["valid"] = validate_output(parsed_output)
         return parsed_output
 
-    def test_parse_output(self, output: str) -> Dict[str, str]:
-        return self.output_parser(output)
-
-    def test_format_input(self, inputs: Dict[str, Any]) -> str:
-        inputs = self.input_pre_format(traj_sa=inputs)
-        return self.prompt.format_prompt(**inputs)
-
-
 def validate_output(output) -> bool:
     if output["no_existing_rule"] and output["found_rule"] is not None:
         return True
@@ -106,25 +101,32 @@ def validate_output(output) -> bool:
             return False
         if output[k] is None:
             return False
+    if not isinstance(output["related_rule_number"], int):
+        return False
     if output["related_rule_classification"] == "similar_intention" and output["updated_rule"] is None:
         return False
-    if output["related_rule_classification"] == "same_intention" and output["found_rule_better"] is None:
+    if output["related_rule_classification"] in ["found_rule_better", "selected_rule_better"] and output["found_rule_better"] is None:
         return False
+    if not output["related_rule_classification"] in ["found_rule_better", "selected_rule_better", "similar_intention", "different_intention"]:
+        return False
+
     return True
 
-def format_activity_record(index: int, observation, available_actions, selected_action):
+def format_activity_record(index: int, observation, action_history, available_actions, selected_action):
+    previously_taken_actions = f"Past actions:\n{[h[1] for h in action_history[-5:]]}\n" if len(action_history) > 0 else ""
     return f"""
 \t# Record{index}
 ## Recorded Observation
 {observation}
-## Available Actions
+{previously_taken_actions}
+## Available actions
 {available_actions}
 ## Recorded selected action
 {selected_action}
 """
 
 def extract_line(output, keyword):
-    # using regex to match "keyword: <content>", keyword is case insensitive
+    # using regex to match "keyword: <content}}", keyword is case insensitive
     match = re.findall(f"{keyword}:[\n\s]*(.*)[>)]*\n", output+"\n\n", re.IGNORECASE)
     if len(match) > 0:
         # return last match
@@ -144,44 +146,48 @@ You will strictly follow the response format down to the characters.
 
 Response format:
 (begin format)
-(Fill in the <> brackets without altering any character outside the brackets. Repeat every words that's not in the brackets. Always use the given snake_case as is.)
-There are two or more recorded activities in the same state.
+(Fill in the {{}} brackets without altering any character outside the brackets. Repeat every words that's not in the brackets.)
+There are two similar recorded activities.
 Record 1:
-According to the record's observation, what are the key information that made you choose <recorded selected action> and why?
-* key_information1: <Key information1>
-* key_information2: <Key information2>(if any more)
+According to the record\'s observation, past actions, available actions, what are the key information? And, what is the reason that made the assistant choose {{recorded selected action}}?
+* key_information1: {{Key information1}}
+* thought: {{thought about this key information and, could it be the reason for the selected_action?}}
+* key_information2: {{Key information2}}
+* thought: {{thought about this key information and, Could it be the reason for the selected_action?}}
 ...
-* reason: Based on the listed key information, <Why choosing this action?>
+(repeat until the assistant found a sounding reason.)
+
+* conclusion: {{Summarize the main reason why this action was chosen.}}
 
 Record 2:
 ...
 (finally answer these 5 questions)
 
-1. Why the two scenarios resulted in difference different actions?
-differences: <selected action1> was chosen instead of <selected action2> because <some reasons>
+1. Why the two scenarios resulted in different actions?
+differences: {{selected action1}} was chosen instead of {{selected action2}} because {{some reasons}}
 
-2. Extract one key idea or rule behind the reason why <record1's selected action> were chosen. Key idea or rule must be generalized and not specific to one particular record. It must be one detailed sentence. Prefix your answer with `found_rule: `.
-found_rule: When <detailed condition(s) based on some key information>, the best action to take is <action (with action_input guidelines if any)>.
+2. Extract one rule behind the reason why {{record1's selected action}} were chosen. The rule must be generalized, not specific to this example. Prefix your answer with `found_rule: `.
+found_rule: When {{detailed condition(s) based on the conclusion about the observation}}, the best action to take is {{action}} {{and action_input guidelines, if any}}.
 
 3. From the list of existing rule, select the most related rule.
-related_rule_number: <rule's number>
-related_rule_content: <rule's content>
+related_rule_number: {{rule's number}}
+related_rule_content: {{rule's content}}
 If there is no existing rules to select from, print "NO_EXISITING_RULE" and skip question 4 and 5.
 
 4. Compare the selected rule with the founded key idea/rule.
-rules_comparisons: <some reasons>
+rules_comparisons: {{some reasons}}
 
 5. What's best describe the selected rule, select one of the 3 choices?
-<same_intention: The selected rule is applicable in this scenario and resulted in the same action and action_input.>
-<similar_intention: This rule should be updated.>
-<different_intention: This rule is for a different kind of scenario.>
+{{same_intention: The selected rule is applicable in this scenario and resulted in the same action and action_input.}}
+{{similar_intention: This rule should be updated.}}
+{{different_intention: This rule is for a different kind of scenario.}}
 
 5.1 Follow up question.
 * If you chose same_intention, select one of the 2 choices.
-<found_rule_better: The found rule is better than the selected rule>
-<selected_rule_better: The selected rule is better than the found rule>
+{{found_rule_better: The found rule is better than the selected rule}}
+{{selected_rule_better: The selected rule is better than the found rule}}
 * If you chose similar_intention, write down the updated rule.
-updated_rule: <When ..., the best action to take is ...>
+updated_rule: {{When ..., the best action to take is ...}}
 * If you chose different_intention, just print N/A for this question.
 (end format)
 
@@ -190,15 +196,18 @@ Here are the recorded activities:
 
 Here are the list of existing rules you can choose from:
 {numbered_existing_rules}
-        """),
-        AIMessagePromptTemplate.from_template(
-            """
+
+Assistant:
 Based on the recorded activities, here is my response in the provided format:
 (begin format)
-(Fill in the <> brackets without altering any character outside the brackets. Repeat every words that's not in the brackets. Always use the given snake_case as is.)
-There are two or more recorded activities in the same state.
+(Fill in the {{}} brackets without altering any character outside the brackets. Repeat every words that's not in the brackets.)
+There are two similar recorded activities.
 (For each records,)
 """
         ),
     ]
 )
+
+# {{conditions/guidelines for the record1's selected action}}
+# found_rule: When {{detailed condition(s) based on some key information}}, the best action to take is {{action (with action_input guidelines if any)}}.
+# updated_rule: {{When ..., the best action to take is ...}}

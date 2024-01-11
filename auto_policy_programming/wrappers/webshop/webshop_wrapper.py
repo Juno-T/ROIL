@@ -1,4 +1,3 @@
-from curses import raw
 import re
 from typing import List, Union
 import gym
@@ -8,31 +7,64 @@ from auto_policy_programming.fsm.action import Action, ActionType
 from auto_policy_programming.fsm.state import State
 from auto_policy_programming.wrappers.webshop.observation_extractions import extract_observation
 
-def state_name_transition(prev_state_name, action, cur_state_unprocessed_actions):
+from bs4.element import Comment
+def tag_visible(element):
+    ignore = {'style', 'script', 'head', 'title', 'meta', '[document]'}
+    return (
+        element.parent.name not in ignore and not isinstance(element, Comment)
+    )
+
+class LimitResultWebAgentTextEnv(WebAgentTextEnv):
+    def __init__(self, *args, max_result_items=50, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.max_result_items = max_result_items
+    
+    #override
+    def convert_html_to_text(self, html, simple=False):
+        """Strip HTML of tags and add separators to convert observation into simple mode"""
+        texts = self._parse_html(html).findAll(text=True)
+        visible_texts = filter(tag_visible, texts)
+        item_count = 0
+        if simple:
+            raise Exception("Not implemented")
+            # For `simple` mode, return just [SEP] separators
+            return ' [SEP] '.join(t.strip() for t in visible_texts if t != '\n')
+        else:
+            # Otherwise, return an observation with tags mapped to specific, unique separators
+            observation = ''
+            for t in visible_texts:
+                if t == '\n': continue
+                if t.parent.name == 'button':  # button
+                    processed_t = f'[button] {t} [button_]'
+                elif t.parent.name == 'label':  # options
+                    if f'"{t}"' in self.state['url']:
+                        processed_t = f'  [clicked button] {t} [clicked button_]'
+                        observation = f'You have clicked {t}.\n' + observation
+                    else:
+                        processed_t = f'  [button] {t} [button_]'
+                elif t.parent.get('class') == ["product-link"]: # product asins
+                    item_count += 1
+                    if item_count > self.max_result_items:
+                        return observation
+                    if f'{t}' in self.server.user_sessions[self.session]['asins']:
+                        processed_t = f'\n[clicked button] {t} [clicked button_]'
+                    else:
+                        processed_t = f'\n[button] {t} [button_]'
+                else: # regular, unclickable text
+                    processed_t =  str(t)
+                observation += processed_t + '\n'
+            return observation
+
+def state_name_transition(cur_raw_state, prev_state_name, cur_state_unprocessed_actions):
     try:
-        action_type = action.split("[")[0]
-        action_value = action.split("[")[1][:-1]
-        if action_type == "search":
+        if 'search' in cur_state_unprocessed_actions and len(cur_state_unprocessed_actions)==1:
+            return "search"
+        if 'buy now' in cur_state_unprocessed_actions:
+            return "item"
+        if 'Total results:' in cur_raw_state:
             return "results"
-        elif action_type == "click":
-            if action_value == "back to search":
-                return "search"
-            elif action_value == "description":
-                return "item_description"
-            elif action_value == "< prev":
-                if 'click[description]' in cur_state_unprocessed_actions:
-                    return "item"
-                if prev_state_name == "item":
-                    return "results"
-                elif prev_state_name == "item_description":
-                    return "item"
-            elif action_value == "next >" and prev_state_name == "results":
-                return "results"
-            elif prev_state_name == "results":
-                return "item"
-            elif prev_state_name == "item" and action_value in ["features", "reviews"]:
-                return "item"
-        return prev_state_name
+        else:
+            return "item_description"
     except:
         return prev_state_name
 
@@ -50,89 +82,36 @@ def clean_available_action(cur_state_name, available_action, clicked_options=[])
     clicked_options = [c.lower() for c in clicked_options]
     processed_actions = []
     if cur_state_name=="search":
-        processed_actions.append("search[<search query>]")
-    elif cur_state_name=="results":
-        processed_actions.append("click[<item_code>]")
+        processed_actions.append("search[{search_term}]")
+    elif cur_state_name=="results" and len(available_action)>4:
+        processed_actions.append("click[{item_code}]")
     # elif cur_state_name=="item":
-    #     processed_actions.append("click[<item_option>]")
+    #     processed_actions.append("click[{item_option}]")
     
     for a in available_action:
-        if a.lower() in ["features", "reviews"]:
+        if a.lower() in ["features", "reviews", "next >"]:
             continue
         if a.lower() in fixed_actions:
             processed_actions.append(f"click[{a}]")
+            continue
         # if a.lower() in fixed_actions:
         if a.lower() in clicked_options:
             continue
         if cur_state_name=="item":
             processed_actions.append(f"click[{a}]")
+            continue
     return processed_actions
 
-class WebAgentTextEnvReActStyle(WebAgentTextEnv):
-    def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
-        self.cur_state_name = None
-        self.instruction = None
-    
-    def reset(self, *args, **kwargs):
-        ret = super().reset(*args, **kwargs)
-        self.cur_state_name = "search"
-        raw_obs = ret[0]
-        matches = re.findall('Instruction[\n\s]*:[\n\s]*(.+?)\n', raw_obs, re.IGNORECASE)
-        if len(matches) > 0:
-            self.instruction = "Instruction: " + matches[-1].strip()
-        else:
-            self.instruction = raw_obs.split("[button]")[-1].strip()
-        try:
-            raw_obs = "[button]".join(raw_obs.split("[button]")[1:]).strip()
-            raw_obs = "[button] " + raw_obs
-        except:
-            raw_obs = ""
-        # raw_obs = raw_obs.replace("[button] ", "[")
-        # raw_obs = raw_obs.replace("[button]", "[")
-        # raw_obs = raw_obs.replace(" [button_]", "]")
-        # raw_obs = raw_obs.replace("[button_]", "]")
-        raw_obs = "search[<search query>]"
-        return (raw_obs, ret[1])
-
-    def get_instruction(self):
-        return self.instruction
-
-    def step(self, *args, **kwargs):
-        ret = super().step(*args, **kwargs)
-        self.cur_state_name = self.state_name_transition(args[0])
-        matches = re.findall("^(You have clicked.*)[\s\n]*Instruction", ret[0], re.IGNORECASE)
-        raw_obs = ret[0]
-        if len(matches) > 0:
-            raw_obs = matches[0]
-        elif self.cur_state_name == "search":
-            raw_obs = "search[<search query>]"
-        else:
-            try:
-                if self.cur_state_name == "results":
-                    raw_obs = "[button]".join(raw_obs.split("[button]")[1:6]).strip()
-                raw_obs = "[button]".join(raw_obs.split("[button]")[1:]).strip()
-                raw_obs = "[button] " + raw_obs
-            except:
-                raw_obs = ""
-            raw_obs = raw_obs.replace("[button] ", "[")
-            raw_obs = raw_obs.replace("[button]", "[")
-            raw_obs = raw_obs.replace(" [button_]", "]")
-            raw_obs = raw_obs.replace("[button_]", "]")
-        return (raw_obs, ret[1], ret[2], ret[3])
-
-    def state_name_transition(self, action: str):
-        return state_name_transition(self.cur_state_name, action, self.get_available_actions()["clickables"])
-
-    def get_cleaned_available_actions(self):
-        return clean_available_action(self.cur_state_name, self.get_available_actions()["clickables"])
-
-class WebAgentTextEnvWithStateName(WebAgentTextEnv):
-    def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
+class WebAgentTextEnvWithStateName(LimitResultWebAgentTextEnv):
+    def __init__(self, *args, split="dev", **kwargs):
+        if split == "dev":
+            filter_goals=(lambda i,g: 500<=i and i<1001)
+        elif split == "test":
+            filter_goals=(lambda i,g: i<500)
+        super().__init__(*args, filter_goals=filter_goals, **kwargs)
         self.cur_state_name = None
         self.cur_raw_obs = None
-    
+
     def reset(self, *args, **kwargs):
         ret = super().reset(*args, **kwargs)
         self.cur_state_name = "search"
@@ -141,12 +120,12 @@ class WebAgentTextEnvWithStateName(WebAgentTextEnv):
     
     def step(self, *args, **kwargs):
         ret = super().step(*args, **kwargs)
-        self.cur_state_name = self.state_name_transition(args[0])
+        self.cur_state_name = self.state_name_transition(ret[0])
         self.cur_raw_obs = ret[0]
         return ret
 
-    def state_name_transition(self, action: str):
-        return state_name_transition(self.cur_state_name, action, self.get_available_actions()["clickables"])
+    def state_name_transition(self, cur_raw_state):
+        return state_name_transition(cur_raw_state, self.cur_state_name, self.get_available_actions()["clickables"])
 
     def get_cleaned_available_actions(self):
         clicked_options = []
@@ -156,7 +135,84 @@ class WebAgentTextEnvWithStateName(WebAgentTextEnv):
                 clicked_options = [m.strip().lower() for m in matches]
                 # print(matches[0], clicked_options)
         return clean_available_action(self.cur_state_name, self.get_available_actions()["clickables"], clicked_options)
-        
+
+class WebAgentTextEnvReActStyle(WebAgentTextEnvWithStateName):
+    def __init__(self, *args, react_style=False, **kwargs):
+        kwargs["observation_mode"] = kwargs.get("observation_mode", "text_rich")
+        self._react_style_settable = kwargs["observation_mode"] == 'text_rich'
+        self.set_react_style(react_style)
+        super().__init__(*args, **kwargs)
+        self.prev_raw_obs = ""
+        self.cur_processed_obs = ""
+
+    def set_react_style(self, react_style):
+        if react_style and (not self._react_style_settable):
+            raise Exception("React style can only be set if observation_mode is text_rich")
+        self._react_style = react_style
+
+    def reset(self, *args, **kwargs):
+        ret = super().reset(*args, **kwargs)
+        if not self._react_style:
+            return ret
+        raw_obs = ret[0]
+        matches = re.findall('Instruction[\n\s]*:[\n\s]*(.+?)\n', raw_obs, re.IGNORECASE)
+        if len(matches) > 0:
+            self.instruction = matches[-1].strip()
+        else:
+            raise Exception("Instruction not found")
+        processed_obs = "search[{search_term}]"
+        self.prev_raw_obs = ret[0]
+        self.cur_processed_obs = processed_obs
+        return (processed_obs, ret[1])
+
+    def get_instruction(self):
+        if not self._react_style:
+            return None
+        return self.instruction
+
+    def step(self, action, *args, **kwargs):
+        ret = super().step(action, *args, **kwargs)
+        if not self._react_style:
+            return ret
+        # if action.startswith('click['):
+        #     clicked_button = action.split("[")[1][:-1]
+        if self.prev_raw_obs == ret[0]:
+            self.prev_raw_obs = ret[0]
+            return ("Invalid action!", ret[1], ret[2], ret[3])
+
+        matches = re.findall("^(You have clicked.*\.)[\s\n]*", ret[0], re.IGNORECASE)
+        if len(matches) > 0:
+            processed_obs = " ".join(matches)
+        elif self.cur_state_name == "search":
+            processed_obs = "search[<search query>]"
+        else:
+            try:
+                processed_obs = "[button]".join(ret[0].split("[button]")[1:]).strip()
+                processed_obs = "[button] " + processed_obs
+            except:
+                processed_obs = "Blank"
+            processed_obs = processed_obs.replace("[button] ", "[")
+            processed_obs = processed_obs.replace("[button]", "[")
+            processed_obs = processed_obs.replace(" [button_]", "]")
+            processed_obs = processed_obs.replace("[button_]", "]")
+        self.prev_raw_obs = ret[0]
+        return (processed_obs, ret[1], ret[2], ret[3])
+
+class WebShopEnv(WebAgentTextEnvReActStyle):
+    def __init__(
+        self, 
+        *args, 
+        split="dev",
+        max_result_items=50,
+        react_style=False,         
+        **kwargs
+    ):
+        kwargs.update({
+            "split": split,
+            "max_result_items": max_result_items,
+            "react_style": react_style,
+        })
+        super().__init__(*args, **kwargs)
 
 webshop_action_keywords = {
     "search": Action("search", ActionType.TEXT),

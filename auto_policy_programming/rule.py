@@ -1,5 +1,6 @@
+from copy import deepcopy
 from uuid import uuid4
-from typing import List, Tuple
+from typing import List, Literal, Tuple
 import json
 import numpy as np
 from pathlib import Path
@@ -40,8 +41,64 @@ class RuleSet:
         self.states = states
         self.rules = {state: {} for state in states}
         self.best_rules = {state: {} for state in states}
+
+    def add_rules(self, state: str, rules: List[Rule]):
+        rules = deepcopy(rules)
+        if state not in self.states:
+            raise ValueError(f"State {state} not in states")
+        for rule in rules:
+            if rule.rule_type not in self.rules[state]:
+                self.rules[state][rule.rule_type] = []
+            self.rules[state][rule.rule_type].append(rule)
+            if rule.rule_type not in self.best_rules[state]:
+                self.best_rules[state][rule.rule_type] = rule
+            else:
+                if rule.score > self.best_rules[state][rule.rule_type].score:
+                    self.best_rules[state][rule.rule_type] = rule
     
-    def update(self, state: str, output: str, selected_rule: Rule = None):
+    def update(
+        self,
+        state: str,
+        selected_rule: Rule,
+        new_rule: str,
+        update_method: Literal["found_rule_better", "selected_rule_better", "similar_intention", "different_intention"]
+    ):
+        if state not in self.states:
+            raise ValueError(f"State {state} not in states")
+        # if not output["valid"]:
+        #     return
+        # if output["no_existing_rule"]:
+        #     rule_type = str(uuid4())
+        #     self.rules[state][rule_type] = [Rule(rule_type, 0, output["found_rule"])]
+        #     self.best_rules[state][rule_type] = self.rules[state][rule_type][0]
+        #     return
+        if selected_rule is None:
+            rule_type = str(uuid4())
+            self.rules[state][rule_type] = [Rule(rule_type, 0, new_rule)]
+            self.best_rules[state][rule_type] = self.rules[state][rule_type][0]
+            return
+        rule_type = selected_rule.rule_type
+        rule_id = selected_rule.rule_id
+        if update_method == "found_rule_better":
+            self.rules[state][rule_type].append(Rule(rule_type, len(self.rules[state][rule_type]), new_rule, selected_rule.score + 1))
+            self.best_rules[state][rule_type] = self.rules[state][rule_type][-1]
+            return
+        if update_method == "selected_rule_better":
+            self.rules[state][rule_type][rule_id].score += 1
+            self.rules[state][rule_type].append(Rule(rule_type, len(self.rules[state][rule_type]), new_rule))
+            self.best_rules[state][rule_type] = self.rules[state][rule_type][rule_id]
+            return
+        if update_method == "similar_intention":
+            self.rules[state][rule_type].append(Rule(rule_type, len(self.rules[state][rule_type]), new_rule, selected_rule.score + 1))
+            self.best_rules[state][rule_type] = self.rules[state][rule_type][-1]
+            return
+        if update_method == "different_intention":
+            rule_type = str(uuid4())
+            self.rules[state][rule_type] = [Rule(rule_type, 0, new_rule)]
+            self.best_rules[state][rule_type] = self.rules[state][rule_type][-1]
+            return
+
+    def old_update(self, state: str, output: str, selected_rule: Rule = None):
         if state not in self.states:
             raise ValueError(f"State {state} not in states")
         if not output["valid"]:
@@ -73,6 +130,11 @@ class RuleSet:
             self.best_rules[state][rule_type] = self.rules[state][rule_type][-1]
             return
 
+    def get_best_rules(self, state: str, num_rules: int = 10) -> List[Rule]:
+        best_rules = self.best_rules[state].copy()
+        sorted_rules = sorted(best_rules.values(), key=lambda x: x.score, reverse=True)
+        return sorted_rules[:num_rules]
+    
     def to_dict(self):
         return {
             "states": self.states,
@@ -86,7 +148,7 @@ class RuleSet:
                     rule_type: rule.to_dict() for rule_type, rule in state_rules.items()
                 } for state, state_rules in self.best_rules.items()},
         }
-    
+
     @classmethod
     def from_dict(cls, ruleset_dict: dict):
         ruleset = cls(ruleset_dict["states"])
@@ -96,6 +158,8 @@ class RuleSet:
         for state, state_rules in ruleset_dict["best_rules"].items():
             for rule_type, rule in state_rules.items():
                 ruleset.best_rules[state][rule_type] = Rule.from_dict(rule)
+                best_rule_id = ruleset.best_rules[state][rule_type].rule_id
+                assert ruleset.best_rules[state][rule_type].content == ruleset.rules[state][rule_type][best_rule_id].content
         return ruleset
 
     def json_save(self, path: str):
